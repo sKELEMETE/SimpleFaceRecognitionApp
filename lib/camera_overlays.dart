@@ -58,45 +58,13 @@ class StorageButton extends StatelessWidget {
   }
 }
 
-class MessageOverlay extends StatelessWidget {
-  final String message;
-  final Color color;
-
-  const MessageOverlay({
-    super.key,
-    required this.message,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: AnimatedOpacity(
-        opacity: message.isEmpty ? 0 : 1,
-        duration: const Duration(milliseconds: 200),
-        child: Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            message,
-            style: const TextStyle(color: Colors.white, fontSize: 18),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class LoadingOverlay extends StatelessWidget {
   const LoadingOverlay({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.black45,
+      color: Colors.black54,
       child: const Center(
         child: CircularProgressIndicator(color: Colors.green),
       ),
@@ -205,7 +173,7 @@ class BottomBar extends StatelessWidget {
             const SizedBox(width: 24),
             _item(
               icon: Icons.person_add,
-              label: "Add",
+              label: "Add Face",
               active: isRegister,
               onTap: !isRegister ? onToggleMode : null,
             ),

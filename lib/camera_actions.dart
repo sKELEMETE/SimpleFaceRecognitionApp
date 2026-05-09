@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
+import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
 
@@ -13,14 +14,19 @@ mixin CameraActions<T extends StatefulWidget> on State<T> {
   CameraController? controller;
 
   bool loading = false;
-  String message = '';
-  Color messageColor = Colors.transparent;
 
-  final detector = FaceDetector(
+  bool showResult = false;
+  String resultText = '';
+  bool isQrResult = false;
+  bool isError = false;
+
+  final FaceDetector detector = FaceDetector(
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.accurate,
     ),
   );
+
+  final BarcodeScanner barcodeScanner = BarcodeScanner();
 
   Future<void> initCamera() async {
     final perm = await Permission.camera.request();
@@ -41,17 +47,38 @@ mixin CameraActions<T extends StatefulWidget> on State<T> {
     setState(() {});
   }
 
-  void showMessage(String text, Color color) {
+  void showResultScreen({
+    required String text,
+    required bool qr,
+    required bool error,
+  }) {
     setState(() {
-      message = text;
-      messageColor = color;
+      showResult = true;
+      resultText = text;
+      isQrResult = qr;
+      isError = error;
+    });
+  }
+
+  void closeResult() {
+    setState(() {
+      showResult = false;
+      resultText = '';
+      isQrResult = false;
+      isError = false;
+    });
+  }
+
+  void showTempError(String text) {
+    setState(() {
+      showResult = true;
+      resultText = text;
+      isQrResult = false;
+      isError = true;
     });
 
     Future.delayed(const Duration(seconds: 2), () {
-      setState(() {
-        message = '';
-        messageColor = Colors.transparent;
-      });
+      if (mounted) closeResult();
     });
   }
 
@@ -61,20 +88,12 @@ mixin CameraActions<T extends StatefulWidget> on State<T> {
     setState(() => loading = true);
 
     try {
-      final embeddings = <List<double>>[];
+      final file = await controller!.takePicture();
+      final input = InputImage.fromFilePath(file.path);
 
-      for (int i = 0; i < 5; i++) {
-        final file = await controller!.takePicture();
+      final faces = await detector.processImage(input);
 
-        final input = InputImage.fromFilePath(file.path);
-        final faces = await detector.processImage(input);
-
-        if (faces.isEmpty) {
-          showMessage('Try Again!', Colors.red);
-          setState(() => loading = false);
-          return;
-        }
-
+      if (faces.isNotEmpty) {
         final bytes = await file.readAsBytes();
         final image = img.decodeImage(bytes)!;
 
@@ -89,46 +108,54 @@ mixin CameraActions<T extends StatefulWidget> on State<T> {
         );
 
         final emb = MLService.instance.predict(cropped);
-        embeddings.add(emb);
+
+        if ((widget as dynamic).isRegister) {
+          await saveFace(emb);
+        } else {
+          final name = await _recognizeName(emb);
+
+          if (name == 'Unknown') {
+            showTempError('Try Again!');
+          } else {
+            showResultScreen(
+              text: "Face: $name",
+              qr: false,
+              error: false,
+            );
+          }
+        }
+
+        setState(() => loading = false);
+        return;
       }
 
-      final avg = MLService.instance.average(embeddings);
+      final qr = await _scanQr(file.path);
 
-      if ((widget as dynamic).isRegister) {
-        await saveFace(avg);
+      if (qr.isNotEmpty) {
+        showResultScreen(
+          text: "QR: $qr",
+          qr: true,
+          error: false,
+        );
       } else {
-        await recognize(avg);
+        showTempError('Try Again!');
       }
     } catch (_) {
-      showMessage('Error! Try Again!', Colors.red);
+      showTempError('Try Again!');
     }
 
     setState(() => loading = false);
   }
 
-  Future<void> saveFace(List<double> emb) async {
-    final c = TextEditingController();
+  Future<String> _scanQr(String path) async {
+    final input = InputImage.fromFilePath(path);
+    final barcodes = await barcodeScanner.processImage(input);
 
-    await showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Add Name'),
-        content: TextField(controller: c),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await DBService.instance.insert(c.text, emb);
-              Navigator.pop(context);
-              showMessage('Saved: ${c.text}', Colors.green);
-            },
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
+    if (barcodes.isEmpty) return '';
+    return barcodes.first.rawValue ?? '';
   }
 
-  Future<void> recognize(List<double> emb) async {
+  Future<String> _recognizeName(List<double> emb) async {
     final users = await DBService.instance.fetchAll();
 
     double min = 999;
@@ -144,10 +171,41 @@ mixin CameraActions<T extends StatefulWidget> on State<T> {
       }
     }
 
-    if (min < 0.85) {
-      showMessage("It's $name", Colors.green);
-    } else {
-      showMessage('Try Again!', Colors.red);
-    }
+    if (min < 0.85) return name;
+    return 'Unknown';
+  }
+
+  Future<void> saveFace(List<double> emb) async {
+    final c = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Add Name'),
+        content: TextField(controller: c),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await DBService.instance.insert(c.text, emb);
+              Navigator.pop(context);
+              showResultScreen(
+                text: "Saved: ${c.text}",
+                qr: false,
+                error: false,
+              );
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    detector.close();
+    barcodeScanner.close();
+    controller?.dispose();
+    super.dispose();
   }
 }
